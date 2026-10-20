@@ -107,10 +107,16 @@ function labelTexture(title, subtitle = '', theme = 'maroon', ratio = 4.4) {
   }, [1, 1]);
 }
 function flatSign(parent, text, subtitle, width = 14, height = 3, theme = 'maroon') {
-  const material = new THREE.MeshBasicMaterial({ map: labelTexture(text, subtitle, theme, width / height), side: THREE.DoubleSide });
-  const mesh = new THREE.Mesh(new THREE.PlaneGeometry(width, height), material);
-  parent.add(mesh);
-  return mesh;
+  const material = new THREE.MeshBasicMaterial({ map: labelTexture(text, subtitle, theme, width / height), side: THREE.FrontSide });
+  const holder = new THREE.Group();
+  const front = new THREE.Mesh(new THREE.PlaneGeometry(width, height), material);
+  front.position.z = .02;
+  const back = new THREE.Mesh(front.geometry, material);
+  back.rotation.y = PI;
+  back.position.z = -.02;
+  holder.add(front, back);
+  parent.add(holder);
+  return holder;
 }
 // Batch small static details into a single draw call without losing their material.
 function mergeStatic(parent, meshes, material) {
@@ -157,9 +163,9 @@ function building(group, cfg, shared) {
 export function createWorld(routeData) {
   const group = new THREE.Group();
   group.name = `${routeData.district} · Doha Rush`;
-  const rng = seeded(routeData.id === 'lusail' ? 11229 : routeData.id === 'pearl' ? 30541 : 90768);
+  const rng = seeded([...routeData.id].reduce((a, ch) => (a * 33 + ch.charCodeAt(0)) >>> 0, 11229));
   const curve = new THREE.CatmullRomCurve3(routeData.points.map(([x, z]) => new THREE.Vector3(x, 0, z)), true, 'catmullrom', .5);
-  const N = 384;
+  const N = routeData.large ? 512 : 384;
   const samples = [];
   for (let i = 0; i < N; i++) {
     const p = curve.getPointAt(i / N);
@@ -195,8 +201,8 @@ export function createWorld(routeData) {
 
   // A sandy mainland, a cobalt gulf, and a circular Pearl island. Water is deliberately
   // outside the playable road; the layout is scenic, not a claim to be a street-level map.
-  const groundMap = earthTexture(routeData.id === 'pearl' ? '#d9c3a7' : '#c5ad8a', 1051);
-  const ground = new THREE.Mesh(new THREE.PlaneGeometry(1400, 1400), M('#ffffff', { map: groundMap, roughness: 1 }));
+  const groundMap = earthTexture(routeData.id === 'pearl' ? '#d9c3a7' : routeData.setting === 'inland' ? '#c5b89a' : '#c5ad8a', 1051);
+  const ground = new THREE.Mesh(new THREE.PlaneGeometry(routeData.large ? 1900 : 1400, routeData.large ? 1800 : 1400), M('#ffffff', { map: groundMap, roughness: 1 }));
   ground.rotation.x = -PI / 2; ground.position.y = -.09;
   ground.receiveShadow = true;
   group.add(ground);
@@ -208,25 +214,31 @@ export function createWorld(routeData) {
     water.rotation.x = -PI / 2; water.position.y = -.045; group.add(water);
     circle(group, 192, 0, .005, 0, M('#e2cbae', { roughness: 1 }), 112);
     torus(group, 191, 1.6, 0, .07, 0, M('#f4e8cd'), 112);
-  } else {
-    const water = new THREE.Mesh(new THREE.PlaneGeometry(870, 1200), waterMat);
-    water.rotation.x = -PI / 2; water.position.set(640, -.045, 0); group.add(water);
-    box(group, 1.5, .75, 900, 205, .15, 0, M('#efe1c4'), false);
+  } else if (routeData.coastline !== null) {
+    const shore = routeData.coastline || 205;
+    const length = routeData.large ? 1650 : 1200;
+    const water = new THREE.Mesh(new THREE.PlaneGeometry(880, length), waterMat);
+    water.rotation.x = -PI / 2; water.position.set(shore + 440, -.045, 0); group.add(water);
+    box(group, 1.5, .75, length, shore, .15, 0, M('#efe1c4'), false);
     const foam = M('#b6e4e0', { emissive: '#55b5b3', emissiveIntensity: .12 });
-    box(group, .75, .03, 900, 207, .025, 0, foam, false);
+    box(group, .75, .03, length, shore + 1.5, .025, 0, foam, false);
   }
 
   // Six layered sandbars on the horizon, unobtrusive under a low-lying fog.
   const duneMat = [M('#c5b095', { roughness: 1 }), M('#ab9f89', { roughness: 1 })];
   for (let i = 0; i < 14; i++) {
     const a = (i / 14) * PI * 2;
-    const r = 470 + rng() * 130;
+    const r = (routeData.large ? 740 : 470) + rng() * 130;
     const hill = new THREE.Mesh(new THREE.SphereGeometry(1, 10, 6), duneMat[i % 2]);
     hill.scale.set(100 + rng() * 90, 18 + rng() * 22, 54 + rng() * 50);
     hill.position.set(Math.cos(a) * r, -12, Math.sin(a) * r);
     hill.castShadow = false;
     group.add(hill);
   }
+
+  // Connected free-drive side streets: an outer boulevard linked to the race loop
+  // by six paved cross streets. Both are included in the drivable-surface query.
+  const sideRoad = routeData.large ? buildSideStreets(group, at, routeData) : null;
 
   // Asphalt, margin, pale paving, curbs and road paint are batched into ribbons.
   const surface = (left, right, y, chooseColor) => {
@@ -332,7 +344,8 @@ export function createWorld(routeData) {
     for (const side of [-1, 1]) {
       const t = i / (barrierN / 2);
       const pos = at(t, side * 17.3);
-      if (routeData.id !== 'pearl' && pos.x > 200) continue;
+      if (routeData.coastline !== null && routeData.id !== 'pearl' && pos.x > (routeData.coastline || 205) - 5) continue;
+      if (sideRoad && side === -1 && sideRoad.junctions.some(j => Math.abs(t - j) < .012)) continue;
       AX.position.set(pos.x, .54, pos.z);
       AX.rotation.set(0, angle(t), 0);
       AX.scale.set(1, 1, 1); AX.updateMatrix();
@@ -349,7 +362,7 @@ export function createWorld(routeData) {
   for (let i = 0; i < 8; i++) {
     const t = ((i + .12) / 8) % 1;
     const pos = at(t, i % 2 ? -23 : 23);
-    if (routeData.id !== 'pearl' && pos.x > 201) continue;
+    if (routeData.coastline !== null && routeData.id !== 'pearl' && pos.x > (routeData.coastline || 205) - 5) continue;
     const sign = new THREE.Group();
     sign.position.copy(pos); sign.rotation.y = angle(t);
     group.add(sign);
@@ -357,23 +370,49 @@ export function createWorld(routeData) {
     box(sign, .16, 4.5, .16, 3.15, 2.25, 0, M('#415e68'), false);
     const face = flatSign(sign, routeData.streets[i].toUpperCase(), `${routeData.district}  /  QATAR`, 7.15, 1.65, 'dark');
     face.position.set(0, 4.2, 0);
-    face.rotation.y = i % 2 ? 0 : PI;
   }
 
   // Island-specific architectural silhouettes.
   if (routeData.id === 'lusail') buildLusail(group, shared, rng);
   if (routeData.id === 'pearl') buildPearl(group, shared, rng);
   if (routeData.id === 'westbay') buildWestBay(group, shared, rng);
+  if (routeData.large) {
+    buildNewDistricts(group, routeData, shared, rng, at, angle, nearest);
+    buildCityHeart(group, routeData, shared, rng);
+  }
 
-  buildOuterCity(group, routeData, shared, rng);
+  if (!routeData.large) buildOuterCity(group, routeData, shared, rng);
   buildPalms(group, routeData, curve, at, rng);
   buildRoadside(group, routeData, at, angle, rng);
+  const traffic = buildTrafficLights(group, routeData, at, angle, sideRoad?.junctions);
+  const gateTs = Array.from({ length: 8 }, (_, i) => i === 7 ? .946 : (i + 1) / 8);
+  const nearestPaved = (x, z) => {
+    const main = nearest(x, z);
+    if (!sideRoad) return { ...main, branch: false, distance: main.distance };
+    let d2 = Infinity;
+    // A coarse uniform sample is sufficient for determining whether tires are on asphalt.
+    for (const p of sideRoad.centers) {
+      const d = (p.x - x) ** 2 + (p.z - z) ** 2;
+      if (d < d2) d2 = d;
+    }
+    const branch = Math.sqrt(d2) < main.distance;
+    return { ...main, branch, distance: Math.min(main.distance, Math.sqrt(d2)) };
+  };
 
   return {
-    group, curve, samples, length: lapLength, N, gates, at, angle, nearest, nightMaterials,
+    group, curve, samples, length: lapLength, N, gates, gateTs, sideRoad, traffic, at, angle, nearest, nearestPaved, nightMaterials,
     starting,
+    signalPhase(clock, i) { return trafficPhase(clock, i); },
     updateLights(night, clock, nextGate = 0) {
       nightMaterials.forEach(({ material, factor }) => { material.emissiveIntensity = .025 + factor * night; });
+      traffic.forEach(({ lamps }, i) => {
+        const state = trafficPhase(clock, i);
+        lamps.forEach((lamp, n) => {
+          const active = lamp.index === state.index;
+          lamp.material.emissiveIntensity = active ? 2.9 + night * .8 : .02;
+          lamp.material.opacity = active ? 1 : .26;
+        });
+      });
       gates.forEach((m, i) => {
         const active = i === nextGate;
         m.emissive.set(active ? '#ffc475' : '#36d5dc');
@@ -425,13 +464,13 @@ function buildPalms(group, route, curve, at, rng) {
     const t = (i + .33) / n;
     const off = (i % 2 ? 1 : -1) * (23 + rng() * 4);
     const p = at(t, off);
-    if (route.id !== 'pearl' && p.x > 194) continue;
+    if (route.coastline !== null && route.id !== 'pearl' && p.x > (route.coastline || 205) - 11) continue;
     if (route.id === 'pearl' && Math.hypot(p.x, p.z) > 188) continue;
     if (route.id === 'lusail' && Math.hypot(p.x + 75, p.z - 35) < 37) continue;
     positions.push([p.x, p.z, 4.2 + rng() * 2.6, rng() * PI * 2]);
   }
   // Additional palms in the interior plaza, not on the racing line.
-  for (let i = 0; i < 25; i++) {
+  for (let i = 0; i < (route.large ? 48 : 25); i++) {
     const a = rng() * PI * 2, r = 75 + rng() * 25;
     const x = Math.cos(a) * r, z = Math.sin(a) * r;
     if (route.id === 'westbay' && Math.hypot(x + 35, z - 10) < 28) continue;
@@ -463,14 +502,15 @@ function buildPalms(group, route, curve, at, rng) {
 function buildRoadside(group, route, at, angle, rng) {
   const postMat = M('#586c71', { metalness: .7 });
   const glowMat = M('#fff2c9', { emissive: '#ffdb93', emissiveIntensity: .5, roughness: .15 });
-  const posts = new THREE.InstancedMesh(new THREE.CylinderGeometry(.1, .17, 7.2, 7), postMat, 27);
-  const heads = new THREE.InstancedMesh(new THREE.BoxGeometry(1.35, .16, .4), postMat, 27);
-  const bulbs = new THREE.InstancedMesh(new THREE.BoxGeometry(1.05, .055, .33), glowMat, 27);
+  const lampMax = route.large ? 52 : 27;
+  const posts = new THREE.InstancedMesh(new THREE.CylinderGeometry(.1, .17, 7.2, 7), postMat, lampMax);
+  const heads = new THREE.InstancedMesh(new THREE.BoxGeometry(1.35, .16, .4), postMat, lampMax);
+  const bulbs = new THREE.InstancedMesh(new THREE.BoxGeometry(1.05, .055, .33), glowMat, lampMax);
   let lampCount = 0;
-  for (let i = 0; i < 27; i++) {
-    const t = (i + .48) / 27;
+  for (let i = 0; i < lampMax; i++) {
+    const t = (i + .48) / lampMax;
     const pos = at(t, i % 2 ? 21 : -21);
-    if (route.id !== 'pearl' && pos.x > 198) continue;
+    if (route.coastline !== null && route.id !== 'pearl' && pos.x > (route.coastline || 205) - 7) continue;
     const side = i % 2 ? -1 : 1, yaw = angle(t);
     AX.rotation.set(0, yaw, 0); AX.scale.set(1, 1, 1);
     AX.position.set(pos.x, 3.6, pos.z); AX.updateMatrix(); posts.setMatrixAt(lampCount, AX.matrix);
@@ -787,4 +827,434 @@ function buildWestBay(group, shared, rng) {
   box(group, 22, .16, 205, 171, .01, 8, green, false);
   for (let i = 0; i < 7; i++) yacht(group, 278 + rng() * 75, -150 + i * 51, 1.15, rng() * PI * 2);
   namePlaque(group, 'DOHA CORNICHE', 171, 85, { width: 20, facing: -PI / 2, theme: 'dark' });
+}
+
+// These links are intentionally invented; they turn scenic racetracks into explorable
+// neighbourhoods, without suggesting the geometry or turn sequence is a real Doha map.
+function roadRibbon(group, points, width, height, color, closed = false) {
+  const vertices = [], indices = [];
+  for (let i = 0; i < points.length; i++) {
+    const prev = points[closed ? (i - 1 + points.length) % points.length : Math.max(0, i - 1)];
+    const next = points[closed ? (i + 1) % points.length : Math.min(points.length - 1, i + 1)];
+    const dx = next.x - prev.x, dz = next.z - prev.z;
+    const len = Math.hypot(dx, dz) || 1;
+    const nx = dz / len, nz = -dx / len;
+    vertices.push(points[i].x + nx * width / 2, height, points[i].z + nz * width / 2,
+      points[i].x - nx * width / 2, height, points[i].z - nz * width / 2);
+    if (i || closed) {
+      const j = i || points.length, a = (j - 1) * 2, b = (j % points.length) * 2;
+      indices.push(a, b, a + 1, a + 1, b, b + 1);
+    }
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
+  geo.setIndex(indices); geo.computeVertexNormals();
+  const mesh = new THREE.Mesh(geo, M(color, { side: THREE.DoubleSide, roughness: .96 }));
+  mesh.receiveShadow = true; group.add(mesh);
+  return mesh;
+}
+function buildSideStreets(group, at, route) {
+  const junctions = [.075, .235, .395, .555, .715, .875];
+  const centers = [];
+  const ringPath = new THREE.CatmullRomCurve3(
+    Array.from({ length: 48 }, (_, i) => at(i / 48, -51)), true, 'catmullrom', .5);
+  const ring = Array.from({ length: 385 }, (_, i) => ringPath.getPointAt(i / 384));
+  roadRibbon(group, ring.slice(0, -1), 20, .09, '#cdbba5', true);
+  roadRibbon(group, ring.slice(0, -1), 14.5, .126, '#33464b', true);
+  ring.forEach((p, i) => { if (i % 2 === 0) centers.push({ x: p.x, z: p.z }); });
+  for (const j of junctions) {
+    const a = at(j, -51), b = at(j, 0);
+    const connector = Array.from({ length: 12 }, (_, i) => new THREE.Vector3(
+      a.x + (b.x - a.x) * i / 11, 0, a.z + (b.z - a.z) * i / 11));
+    roadRibbon(group, connector, 19, .092, '#d2c1a5');
+    roadRibbon(group, connector, 15, .13, '#354a50');
+    for (let i = 0; i < 11; i++) centers.push({ x: connector[i].x, z: connector[i].z });
+  }
+  const paint = new THREE.InstancedMesh(new THREE.BoxGeometry(.16, .015, 4.8),
+    M('#eee7d3', { roughness: .95 }), 90);
+  let k = 0;
+  for (let i = 0; i < 384 && k < 90; i += 5) {
+    const before = ring[(i + 383) % 384], after = ring[(i + 1) % 384];
+    const p = ring[i], a = Math.atan2(after.x - before.x, after.z - before.z);
+    AX.position.set(p.x, .149, p.z); AX.rotation.set(0, a, 0); AX.scale.set(1, 1, 1); AX.updateMatrix();
+    paint.setMatrixAt(k++, AX.matrix);
+  }
+  paint.count = k; paint.instanceMatrix.needsUpdate = true; group.add(paint);
+  return { junctions, ring, centers };
+}
+
+// A real alternating signal cycle: green (9s), amber (2s), red (5s).
+// The nearby signal and its remaining seconds are shown on the driving HUD.
+function trafficPhase(clock, i) {
+  const phase = ((clock + i * 3.3) % 16 + 16) % 16;
+  return phase < 9 ? { name: 'GREEN', index: 2, seconds: Math.ceil(9 - phase) }
+    : phase < 11 ? { name: 'AMBER', index: 1, seconds: Math.ceil(11 - phase) }
+      : { name: 'RED', index: 0, seconds: Math.ceil(16 - phase) };
+}
+function buildTrafficLights(group, route, at, angle, junctions) {
+  const xs = junctions || [.19, .49, .79];
+  const signals = [];
+  const steel = M('#183644', { metalness: .7, roughness: .32 });
+  const trim = M('#ace4d8', { emissive: '#26aa9a', emissiveIntensity: .16 });
+  xs.forEach((t, i) => {
+    const signal = new THREE.Group(); signal.position.copy(at(t - .009));
+    signal.rotation.y = angle(t); group.add(signal);
+    const lamps = [];
+    for (const side of [-1, 1]) {
+      box(signal, .24, 6.5, .24, side * 12.3, 3.25, 0, steel, false);
+      box(signal, .84, 3.3, .61, side * 12.3, 6.22, 0, steel, false);
+      box(signal, .65, .12, .67, side * 12.3, 7.94, 0, trim, false);
+      ['#f95f73', '#ffcd62', '#60f0ba'].forEach((color, n) => {
+        const mat = M('#ffffff', { emissive: color, emissiveIntensity: .02,
+          transparent: true, opacity: .25, metalness: .05, roughness: .19 });
+        const orb = new THREE.Mesh(new THREE.SphereGeometry(.285, 10, 8), mat);
+        orb.position.set(side * 12.3, 7.22 - n * .95, -.37);
+        signal.add(orb); lamps.push({ material: mat, index: n });
+      });
+    }
+    // A crisp stop line on the approach, without a collision wall across the road.
+    const paint = M('#f6eee0', { roughness: 1 });
+    box(signal, 17.3, .02, .42, 0, .217, -8.5, paint, false);
+    for (let stripe = -5; stripe <= 5; stripe++)
+      box(signal, .9, .016, 2.2, stripe * 1.55, .217, -2.9, paint, false);
+    signals.push({ t, lamps, index: i });
+  });
+  return signals;
+}
+
+function buildNewDistricts(group, route, shared, rng, at, angle, nearest) {
+  const landmarkSpots = [];
+  for (const site of route.landmarks || []) {
+    const root = new THREE.Group(); root.position.copy(at(site.t, (site.side || 1) * 82));
+    root.rotation.y = angle(site.t);
+    // Orient the composed miniature towards the stretch of road it decorates.
+    group.add(root);
+    landmarkSpots.push(root.position.clone());
+    destination(root, site, shared, rng, route.accent);
+    const sign = flatSign(root, site.name, route.district, 19, 3, 'maroon');
+    sign.position.set(-39, 5.2, 0); sign.rotation.y = -PI / 2;
+    for (const dz of [-7.5, 7.5]) box(root, .18, 4, .18, -39, 2, dz, M('#425d69'), false);
+  }
+  // A compact, batched city layer behind the recognisable destinations.
+  const locations = [];
+  for (let i = 0; i < (route.id === 'grand' ? 86 : 52); i++) {
+    const t = (i + rng() * .5) / (route.id === 'grand' ? 86 : 52);
+    const p = at(t, 134 + rng() * 76);
+    if (nearest(p.x, p.z).distance < 76) continue;
+    if (landmarkSpots.some(s => Math.hypot(p.x - s.x, p.z - s.z) < 48)) continue;
+    locations.push({ x: p.x, z: p.z, w: 10 + rng() * 13,
+      d: 11 + rng() * 12, h: 12 + rng() * (route.id === 'grand' ? 47 : 30),
+      tint: ['#d4bca6', '#81a9b3', '#d9b1a0', '#e3d5ba', '#83b8a9', '#c8aac0'][i % 6] });
+  }
+  if (!locations.length) return;
+  const unit = new THREE.BoxGeometry(1, 1, 1);
+  const facade = M('#ffffff', { map: shared.blue, emissive: '#e2a978',
+    emissiveMap: shared.blue, emissiveIntensity: .02, metalness: .19, roughness: .49 });
+  shared.nightMaterials.push({ material: facade, factor: .26 });
+  const mesh = new THREE.InstancedMesh(unit, facade, locations.length);
+  const cap = new THREE.InstancedMesh(unit, M('#f4d1a5', { roughness: .8 }), locations.length);
+  locations.forEach(({ x, z, w, d, h, tint }, i) => {
+    AX.position.set(x, h / 2, z); AX.rotation.set(0, 0, 0);
+    AX.scale.set(w, h, d); AX.updateMatrix(); mesh.setMatrixAt(i, AX.matrix);
+    mesh.setColorAt(i, C(tint));
+    AX.position.y = h + .25; AX.scale.set(w + .8, .6, d + .8); AX.updateMatrix(); cap.setMatrixAt(i, AX.matrix);
+  });
+  mesh.instanceMatrix.needsUpdate = cap.instanceMatrix.needsUpdate = true;
+  group.add(mesh, cap);
+}
+
+// Recognisable, colourful *illustrations* of each venue rather than reproductions.
+function destination(g, site, shared, rng, accent) {
+  const pale = M('#f2e2c8', { roughness: .83 });
+  const white = M('#fff4df', { roughness: .78 });
+  const gold = M('#d6aa68', { metalness: .34, roughness: .5 });
+  const teal = M('#42bac5', { metalness: .2, roughness: .34 });
+  const blue = M('#477ea0', { metalness: .3, roughness: .37 });
+  const rose = M('#d79d9c', { roughness: .78 });
+  const grass = M('#80ad85', { roughness: 1 });
+  foundation(g, 0, 0, 27, site.type === 'park' || site.type === 'hills' ? '#a9be8e' : '#e2ccaa');
+  torus(g, 27, .34, 0, .15, 0, M(accent, { emissive: accent, emissiveIntensity: .2 }), 64);
+  switch (site.type) {
+    case 'skyline': {
+      const blocks = [[-15, -9, 13, 46], [8, -12, 11, 63], [-2, 13, 13, 39], [16, 14, 10, 49]];
+      for (const [x, z, w, h] of blocks) building(g, { x, z, w, d: w, h,
+        color: '#83b6c6', style: 'blue' }, shared);
+      cylinder(g, 5.1, 5.1, 69, 14, 1, 34.5, -6, gold);
+      cylinder(g, 5.22, 5.22, 65, 14, 1, 34.5, -6,
+        M('#d5b081', { map: shared.sand, metalness: .34 }), false);
+      break;
+    }
+    case 'katara': {
+      circle(g, 7.8, 0, .19, 0, teal);
+      for (let i = 0; i < 5; i++) {
+        const seat = new THREE.Mesh(new THREE.TorusGeometry(8 + i * 3.4, .76, 5, 38, PI * 1.25),
+          i % 2 ? M('#dcbf9d') : pale);
+        seat.rotation.x = PI / 2; seat.rotation.z = .15; seat.position.y = .6 + i * .55; g.add(seat);
+      }
+      box(g, 38, 4, 5, 0, 2, -10, pale);
+      box(g, 31, .52, 5.8, 0, 4.3, -10, rose, false);
+      for (let i = -3; i <= 3; i++) cylinder(g, .5, .5, 7, 7, i * 5, 3.5, -14, white);
+      break;
+    }
+    case 'pearl': {
+      circle(g, 16, 0, .22, 0, teal);
+      for (const sx of [-1, 1]) {
+        cylinder(g, 5, 5.7, 34, 11, sx * 16, 17, -2, white);
+        cylinder(g, 4.8, 5.5, 30, 11, sx * 16, 17, -2,
+          M('#99c1c9', { map: shared.pearl, roughness: .4, metalness: .32 }), false);
+        cylinder(g, 3, 5, 3.5, 11, sx * 16, 36, -2, gold);
+      }
+      yacht(g, 0, 2, 1.4, .25);
+      break;
+    }
+    case 'stadium': {
+      const shell = new THREE.Mesh(new THREE.CylinderGeometry(19, 22, 13, 36, 1, true), gold);
+      shell.position.y = 7; g.add(shell);
+      const lip = new THREE.Mesh(new THREE.RingGeometry(13, 19, 36), pale);
+      lip.rotation.x = -PI / 2; lip.position.y = 13.7; g.add(lip);
+      circle(g, 12, 0, 9, 0, M('#315f59'));
+      for (let i = 0; i < 24; i++) {
+        const a = i * PI / 12;
+        box(g, .38, 11, .4, Math.cos(a) * 19.7, 7, Math.sin(a) * 19.7, pale, false);
+      }
+      break;
+    }
+    case 'aspire': {
+      cylinder(g, 4.5, 7.5, 62, 12, 0, 31, 0, blue);
+      cylinder(g, 6.1, 5.2, 8, 12, 0, 43, 0, M('#d5c5b9', { metalness: .3 }));
+      for (let y = 13; y < 63; y += 10) torus(g, y > 40 ? 5.7 : 5.8 - y * .02, .36, 0, y, 0, gold, 16);
+      const spire = new THREE.Mesh(new THREE.ConeGeometry(2.1, 14, 10), gold);
+      spire.position.y = 69; g.add(spire);
+      break;
+    }
+    case 'msheireb': {
+      for (let i = 0; i < 5; i++) {
+        const x = -16 + (i % 3) * 15, z = -11 + Math.floor(i / 3) * 19;
+        box(g, 12, 11 + i % 3 * 3, 13, x, (11 + i % 3 * 3) / 2, z, i % 2 ? pale : white);
+        for (let q = -1; q <= 1; q++) box(g, 1.1, 6, .13, x + q * 3, 4.2, z + 6.6, blue, false);
+      }
+      circle(g, 6, 2, .18, 3, teal);
+      break;
+    }
+    case 'souq': {
+      const canvasColours = ['#bb5677', '#50bcb7', '#eac287', '#769bb5'];
+      for (let row = 0; row < 3; row++) for (let col = 0; col < 5; col++) {
+        const x = -19 + col * 9.3, z = -12 + row * 12;
+        box(g, 7.4, 5.4, 8.6, x, 2.7, z, row % 2 ? pale : gold);
+        box(g, 8.5, .85, 9.2, x, 5.8, z, row === 2 ? white : pale, false);
+        box(g, 7, .24, 2.8, x, 6.37, z + 1.5, M(canvasColours[(row + col) % 4]), false);
+        box(g, 7.8, 1.2, 1, x, 3.7, z + 4.6,
+          M(canvasColours[col % 4]), false);
+      }
+      break;
+    }
+    case 'national': {
+      box(g, 32, 6, 27, 0, 3, 0, pale);
+      for (let i = 0; i < 9; i++) {
+        const petals = new THREE.Mesh(new THREE.CylinderGeometry(12 + i % 3, 12 + i % 3, .72, 12), white);
+        const a = i * PI * 2 / 9;
+        petals.position.set(Math.cos(a) * 8, 7 + i % 4 * 1.7, Math.sin(a) * 6);
+        petals.rotation.set(.35 + i * .09, i * .42, .28 * Math.sin(i * 3));
+        petals.castShadow = true; g.add(petals);
+      }
+      break;
+    }
+    case 'mina': {
+      const palette = ['#ebafaa', '#94c7bf', '#e4ce92', '#aebcdb', '#edc6a4', '#e1b8c7', '#9dbfd0'];
+      for (let i = 0; i < 7; i++) {
+        const x = -22 + (i % 4) * 13, z = i < 4 ? -11 : 10;
+        const h = 7 + (i % 3) * 2.2;
+        box(g, 11, h, 11, x, h / 2, z, M(palette[i]));
+        box(g, 12, .58, 12, x, h + .25, z, white, false);
+        for (let j = -1; j <= 1; j++) box(g, 1.4, 2.1, .1, x + j * 3, 3.5, z + 5.6, blue, false);
+      }
+      break;
+    }
+    case 'mia': {
+      circle(g, 25.2, 0, .16, 0, teal);
+      torus(g, 24.7, .7, 0, .23, 0, white, 64);
+      box(g, 35, 1.3, 32, 0, .7, 0, white);
+      box(g, 34, 5, 30, 0, 3.5, 0, white);
+      box(g, 26, 9, 25, 0, 10.5, 0, pale);
+      box(g, 19, 9, 19, 0, 19.5, 0, white);
+      box(g, 13, 7, 12, 0, 27, 0, pale);
+      box(g, 7, 1.1, 7, 0, 31, 0, white);
+      for (const y of [5.9, 15.8, 24.8]) {
+        const w = y < 10 ? 35 : y < 20 ? 27 : 20;
+        box(g, w + .3, .38, w * .87, 0, y, 0, gold, false);
+      }
+      box(g, 8, 4.8, .28, 0, 17, 9.65, blue, false);
+      box(g, .28, 4.8, 8, 9.65, 17, 0, blue, false);
+      box(g, 5.5, 2.7, .2, 0, 29.2, 6.1, blue, false);
+      break;
+    }
+    case 'sheraton': {
+      for (let i = 0; i < 8; i++) {
+        const w = 28 - i * 2.1;
+        box(g, w, 5.8, w * .67, 0, 3 + i * 5.7, 0,
+          i % 2 ? M('#e3d3bd') : M('#8eb3b9', { metalness: .15 }));
+      }
+      break;
+    }
+    case 'park': case 'hills': {
+      if (site.type === 'hills') for (let i = 0; i < 3; i++) {
+        const hill = new THREE.Mesh(new THREE.SphereGeometry(1, 12, 7), grass);
+        hill.scale.set(12, 4, 8); hill.position.set(-15 + i * 14, 0, i % 2 ? 8 : -7); g.add(hill);
+      }
+      for (let i = 0; i < 13; i++) {
+        const x = (rng() - .5) * 41, z = (rng() - .5) * 38;
+        cylinder(g, .35, .49, 3.4, 6, x, 1.7, z, gold, false);
+        const ball = new THREE.Mesh(new THREE.IcosahedronGeometry(2.4, 0),
+          M(i % 3 ? '#53a787' : '#7bc67c'));
+        ball.position.set(x, 4.6, z); g.add(ball);
+      }
+      break;
+    }
+    case 'pearlmonument': {
+      const pearl = new THREE.Mesh(new THREE.SphereGeometry(6, 20, 12), white);
+      pearl.position.y = 9; g.add(pearl);
+      for (const side of [-1, 1]) {
+        const shell = new THREE.Mesh(new THREE.SphereGeometry(1, 12, 8), pale);
+        shell.scale.set(11, 1.3, 7); shell.rotation.z = side * .38;
+        shell.position.set(side * 6, 4, 0); g.add(shell);
+      }
+      break;
+    }
+    case 'dhow': {
+      circle(g, 23, 0, .15, 0, teal);
+      for (let i = 0; i < 3; i++) {
+        yacht(g, -10 + i * 9, -4 + i * 5, 2.3, .3);
+        cylinder(g, .09, .1, 14, 5, -10 + i * 9, 9.2, -4 + i * 5, gold, false);
+        const sail = new THREE.Mesh(new THREE.ConeGeometry(4.3, 10, 3), white);
+        sail.scale.z = .12; sail.rotation.z = .35;
+        sail.position.set(-7 + i * 9, 10, -4 + i * 5); g.add(sail);
+      }
+      break;
+    }
+    case 'mosque': {
+      box(g, 26, 9, 22, -3, 4.5, 0, pale);
+      const dome = new THREE.Mesh(new THREE.SphereGeometry(9, 18, 9, 0, PI * 2, 0, PI / 2), teal);
+      dome.position.set(-3, 9, 0); g.add(dome);
+      cylinder(g, 2, 2.8, 33, 10, 18, 16.5, -5, white);
+      for (let y = 10; y < 33; y += 6) torus(g, 2.3, .29, 18, y, -5, gold, 12);
+      break;
+    }
+    case 'retail': {
+      for (let i = 0; i < 5; i++) {
+        box(g, 9, 10 + i % 2 * 3, 21, -19 + i * 10, 5 + i % 2 * 1.5, 0,
+          M(i % 2 ? '#d6b8bd' : '#edd6ad'));
+        box(g, 8, 5, .15, -19 + i * 10, 3, 10.6, M('#7aafbd'), false);
+      }
+      break;
+    }
+    case 'beach': {
+      circle(g, 22, 0, .16, 0, M('#f6deb1'));
+      for (let i = 0; i < 8; i++) {
+        const a = i * PI / 4;
+        const x = Math.cos(a) * 15, z = Math.sin(a) * 15;
+        cylinder(g, .08, .1, 3.3, 5, x, 1.7, z, gold, false);
+        const shade = new THREE.Mesh(new THREE.ConeGeometry(2.6, 1, 8),
+          M(i % 2 ? '#fa9eac' : '#45c6c6'));
+        shade.position.set(x, 3.7, z); g.add(shade);
+      }
+      break;
+    }
+    case 'planetarium': {
+      cylinder(g, 16, 16, 4, 20, 0, 2, 0, white);
+      const dome = new THREE.Mesh(new THREE.SphereGeometry(15, 20, 12, 0, PI * 2, 0, PI / 2), blue);
+      dome.position.y = 4; g.add(dome);
+      torus(g, 15.3, .5, 0, 4.3, 0, gold, 40);
+      break;
+    }
+    case 'pigeons': {
+      for (let i = 0; i < 4; i++) {
+        const x = -14 + i * 10;
+        cylinder(g, 3, 3.8, 20 + (i % 2) * 4, 9, x, 10 + (i % 2) * 2, 0, white);
+        for (let y = 7; y < 19; y += 4) torus(g, 3.1, .24, x, y, 0, gold, 9);
+      }
+      break;
+    }
+    case 'museum321': {
+      box(g, 36, 9, 24, 0, 4.5, 0, pale);
+      box(g, 29, 5, 22, 0, 11.5, 0, blue);
+      box(g, 39, 1, 26, 0, 15, 0, gold);
+      break;
+    }
+    case 'education': {
+      box(g, 37, 3, 27, 0, 1.5, 0, white);
+      box(g, 34, 12, 23, 0, 9, 0, M('#8cb8b9', { metalness: .35 }));
+      const roof = box(g, 43, 2.4, 28, 0, 16, -1, white);
+      roof.rotation.x = -.12;
+      for (let i = -2; i <= 2; i++) box(g, 1, 11, .45, i * 6.5, 9, 11.9, pale, false);
+      break;
+    }
+    default: box(g, 28, 11, 24, 0, 5.5, 0, rose);
+  }
+}
+
+// A colourful centre fills the longer routes' interior with a coherent district
+// rather than an empty oval. It is scenery, not a representation of street geography.
+function buildCityHeart(group, route, shared, rng) {
+  if (route.id === 'grand') {
+    buildWestBay(group, shared, rng);
+    return;
+  }
+  if (route.id === 'aspire') {
+    const lawn = M('#6eaf86', { roughness: 1 });
+    circle(group, 116, 0, .03, 0, lawn, 96);
+    torus(group, 113, 1.2, 0, .13, 0, M('#dfd5ac'), 96);
+    circle(group, 27, 37, .13, -17, M('#56b5be', { metalness: .15, roughness: .32 }));
+    torus(group, 27, .85, 37, .2, -17, M('#eee1c4'));
+    const path = M('#f0dcb5', { roughness: .94 });
+    for (const [x, z, ang] of [[-55, 0, .3], [8, 40, -.45], [62, 51, .2]]) {
+      const walk = box(group, 87, .12, 3.2, x, .13, z, path, false);
+      walk.rotation.y = ang;
+    }
+    const football = box(group, 48, .14, 27, -47, .17, -44, M('#3e9965'), false);
+    football.rotation.y = -.22;
+    for (let i = 0; i < 37; i++) {
+      const a = rng() * PI * 2, r = 31 + rng() * 68;
+      const x = Math.cos(a) * r, z = Math.sin(a) * r;
+      if ((x - 37) ** 2 + (z + 17) ** 2 < 850 || (x + 47) ** 2 + (z + 44) ** 2 < 800) continue;
+      cylinder(group, .24, .34, 3, 5, x, 1.5, z, M('#98704f'), false);
+      const crown = new THREE.Mesh(new THREE.IcosahedronGeometry(2.3, 0),
+        M(i % 3 ? '#358762' : '#85c07a'));
+      crown.position.set(x, 4, z); group.add(crown);
+    }
+    return;
+  }
+  const warm = route.id === 'olddoha';
+  const pastel = route.id === 'katara';
+  const palette = warm
+    ? ['#e7d2b4', '#c9bda6', '#e5c79f', '#c8aba0', '#e6dac6']
+    : pastel
+      ? ['#f2d8bb', '#e9b3a9', '#a8c9c3', '#ecd7ba', '#ddb9c4']
+      : ['#f2c9b7', '#a6cace', '#ebdaaa', '#d7c2d4', '#9bcabc'];
+  foundation(group, 0, 0, 34, pastel ? '#aad4c4' : '#ebd6ba');
+  circle(group, 18, 0, .16, 0, M(pastel ? '#80c6b8' : '#7fc5c5'));
+  torus(group, 18, .65, 0, .22, 0, M('#faf0d9'));
+  const spots = [];
+  for (let i = 0; i < 72; i++) {
+    const a = 2 * PI * (i / 72) + (rng() - .5) * .03;
+    const r = 48 + rng() * 59;
+    const x = Math.cos(a) * r, z = Math.sin(a) * r;
+    const w = 7.5 + rng() * 10, d = 8 + rng() * 10;
+    const h = warm ? 6 + rng() * 14 : pastel ? 7 + rng() * 18 : 11 + rng() * 31;
+    spots.push({ x, z, w, d, h, color: palette[i % palette.length] });
+  }
+  const unit = new THREE.BoxGeometry(1, 1, 1);
+  const mat = M('#ffffff', { map: shared.pearl, metalness: .12, roughness: .55,
+    emissive: '#dd9969', emissiveMap: shared.pearl, emissiveIntensity: .01 });
+  shared.nightMaterials.push({ material: mat, factor: .24 });
+  const body = new THREE.InstancedMesh(unit, mat, spots.length);
+  const roofs = new THREE.InstancedMesh(unit, M('#efe5d0'), spots.length);
+  spots.forEach(({ x, z, w, d, h, color }, i) => {
+    AX.position.set(x, h / 2, z); AX.rotation.set(0, 0, 0);
+    AX.scale.set(w, h, d); AX.updateMatrix(); body.setMatrixAt(i, AX.matrix);
+    body.setColorAt(i, C(color));
+    AX.position.y = h + .22; AX.scale.set(w + .9, .45, d + .9);
+    AX.updateMatrix(); roofs.setMatrixAt(i, AX.matrix);
+  });
+  body.instanceMatrix.needsUpdate = roofs.instanceMatrix.needsUpdate = true;
+  group.add(body, roofs);
 }

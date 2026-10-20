@@ -4,6 +4,7 @@ import { ROUTES, CARS, DRIVERS, CAMERA_NAMES, TIMES } from './data.js';
 import { createWorld } from './world.js';
 import { createCar, animateCar } from './car.js';
 import { GameAudio } from './audio.js';
+import { steeringInput } from './controls.js';
 import './styles.css';
 
 const $ = (id) => document.getElementById(id);
@@ -32,13 +33,13 @@ app.innerHTML = `
       <span class="brand-mark">DR<span class="brand-mark-point">.</span></span>
       <span class="brand-word">DOHA <strong>RUSH</strong><small>QATAR · 2026</small></span>
     </div>
-    <div class="head-right"><span class="live-dot"></span><span id="head-district">LUSAIL, QATAR</span><span class="head-separator">/</span><span id="head-coords">ROUTE 01 / 03</span></div>
+    <div class="head-right"><span class="live-dot"></span><span id="head-district">DOHA, QATAR</span><span class="head-separator">/</span><span id="head-coords">ROUTE 01 / 08</span></div>
   </header>
   <main id="menu" class="menu-screen hidden" aria-label="Main menu">
     <div class="menu-content">
       <div class="hero-eyebrow"><span class="eyebrow-dash"></span> DRIVE THE CITY OF LIGHT <span class="eyebrow-end">/ 01</span></div>
       <h1 class="hero-title"><span>DOHA</span><em>RUSH<span class="hero-period">.</span></em></h1>
-      <p class="hero-description">Three iconic districts. One unforgettable drive.<br>Find your line through <strong>Lusail, The Pearl &amp; West Bay.</strong></p>
+      <p class="hero-description">Eight vibrant routes. One extraordinary city.<br>Explore <strong>Lusail, The Pearl, West Bay</strong> and beyond.</p>
       <div class="hero-divider"><span></span><i>SELECT YOUR DRIVE</i><span></span></div>
       <nav class="menu-actions" aria-label="Game modes">
         <button class="action-primary" data-action="start"><span class="action-icon">↗</span><span>START RALLY<small>8 CHECKPOINTS · RACE THE CLOCK</small></span><span class="action-arrow">→</span></button>
@@ -56,9 +57,10 @@ app.innerHTML = `
       <div class="no-login"><span class="no-login-dot"></span> NO ACCOUNT. NO DOWNLOAD. JUST DRIVE.</div>
     </div>
     <aside class="menu-route-picker" aria-label="Select your route">
-      <div class="picker-heading"><span>CHOOSE YOUR DISTRICT</span><span id="route-picker-count">01 / 03</span></div>
+      <div class="picker-heading"><span>PICK YOUR ADVENTURE</span><div class="picker-nav"><button data-action="prev-route" aria-label="Previous route">←</button><span id="route-picker-count">01 / 08</span><button data-action="next-route" aria-label="Next route">→</button></div></div>
+      <div id="route-feature" class="route-feature" aria-live="polite"></div>
       <div class="route-options" id="menu-route-options"></div>
-      <div class="picker-footer"><span>◀</span> A STYLISED DRIVE THROUGH QATAR <span>▶</span></div>
+      <div class="picker-footer"><span>◀</span> FICTIONAL ROADS · REAL DOHA INSPIRATION <span>▶</span></div>
     </aside>
     <div class="menu-edge-label">BUILT FOR THE OPEN ROAD <span>✳</span> MADE FOR QATAR</div>
   </main>
@@ -96,8 +98,10 @@ app.innerHTML = `
         <canvas id="minimap" width="480" height="278" aria-label="Racing circuit minimap"></canvas>
         <div class="mini-street"><span class="street-symbol">↗</span><span id="street-name">LUSAIL BOULEVARD</span></div>
       </div>
+      <div class="traffic-hud glass" id="traffic-hud" aria-label="Upcoming traffic light"><div class="signal-dots"><i></i><i></i><i></i></div><div class="signal-copy"><small>UPCOMING SIGNAL</small><strong id="signal-label">GREEN · 09S</strong><span id="signal-distance">-- M AHEAD</span></div></div>
       <button class="pause-control glass" data-action="pause" title="Pause (P)" aria-label="Pause game">Ⅱ</button>
     </div>
+    <div class="location-chip glass hidden" id="location-chip"><span>✳ &nbsp; NOW PASSING</span><strong id="location-name"></strong></div>
     <div class="hud-bottom-left glass"><div class="controls-label">DRIVING CONTROLS</div><span><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> DRIVE</span><span><kbd>SPACE</kbd> HANDBRAKE &nbsp; <kbd>C</kbd> CAMERA</span><span><kbd>R</kbd> RESET &nbsp; <kbd>P</kbd> PAUSE</span></div>
     <div class="telemetry glass"><div class="telemetry-gear"><small>GEAR</small><strong id="gear-number">1</strong></div><div class="telemetry-center"><div class="telem-top"><span>ENGINE RPM</span><b id="rpm-value">2,400</b></div><div class="rpm-track"><i id="rpm-fill"></i></div><div class="pedals"><div><span>THROTTLE</span><i class="pedal-track"><i id="throttle-fill"></i></i></div><div><span>BRAKE</span><i class="pedal-track"><i id="brake-fill"></i></i></div></div></div><div class="gforce" id="gforce"><div class="gforce-dot" id="gforce-dot"></div></div></div>
     <div class="speed-box glass"><div class="speed-disc" id="speed-disc"><span class="speed-label">KM/H</span><strong id="speed-number">0</strong><small id="camera-name">CHASE CAM</small></div></div>
@@ -139,7 +143,7 @@ camera.position.set(208, 88, 205);
 const orbit = new OrbitControls(camera, renderer.domElement);
 orbit.enabled = false;
 orbit.enableDamping = true; orbit.dampingFactor = .055;
-orbit.minDistance = 8; orbit.maxDistance = 350;
+orbit.minDistance = 8; orbit.maxDistance = 1100;
 orbit.maxPolarAngle = Math.PI * .49;
 const sun = new THREE.DirectionalLight('#ffca96', 2.4);
 sun.castShadow = true;
@@ -160,6 +164,14 @@ const cache = new Map();
 let selected = 0, carIndex = 0, driverIndex = 0, cameraIndex = 0;
 let state = 'loading', beforePause = 'race', gameMode = 'race', modalType = '', settingsFrom = '';
 let world = createWorld(ROUTES[0]); cache.set(0, world); scene.add(world.group);
+const menuFocus = () => {
+  const r = ROUTES[selected];
+  if (!r.large) return new THREE.Vector3(0, 0, 0);
+  const featured = { grand: 0, corniche: 4, olddoha: 1, katara: 0, aspire: 0 }[r.id] || 0;
+  const site = r.landmarks[featured];
+  return world.at(site.t, (site.side || 1) * 82);
+};
+let menuTarget = menuFocus();
 let car = createCar(CARS[0], 0); scene.add(car);
 let player = { x: 0, z: 0, yaw: 0, speed: 0, drift: 0, steer: 0,
   offroad: false, lateral: 0, prevSpeed: 0, heading: 0 };
@@ -173,7 +185,7 @@ let currentTime = {
   intensity: TIMES.sunset.sunIntensity, ambient: TIMES.sunset.ambient,
   exposure: TIMES.sunset.exposure, light: new THREE.Vector3(...TIMES.sunset.light), night: TIMES.sunset.night,
 };
-let elapsed = 0, uiClock = 0, skyClock = 0, hudOn = true;
+let elapsed = 0, trafficClock = 0, uiClock = 0, skyClock = 0, hudOn = true;
 let toastTimeout, announcingTimeout;
 const camDesired = new THREE.Vector3(), camTarget = new THREE.Vector3();
 const colorBuffer = new THREE.Color();
@@ -200,22 +212,25 @@ function selectRoute(index) {
     selected = index;
     if (!cache.has(index)) cache.set(index, createWorld(ROUTES[index]));
     world = cache.get(index); scene.add(world.group);
+    menuTarget = menuFocus();
     placeCar(0);
   }
   refreshRecords();
   setTime(ROUTES[selected].time);
   $('head-district').textContent = `${ROUTES[selected].district}, QATAR`;
-  $('head-coords').textContent = `ROUTE ${ROUTES[selected].number} / 03`;
-  $('route-picker-count').textContent = `${ROUTES[selected].number} / 03`;
+  $('head-coords').textContent = `ROUTE ${ROUTES[selected].number} / ${String(ROUTES.length).padStart(2, '0')}`;
+  $('route-picker-count').textContent = `${ROUTES[selected].number} / ${String(ROUTES.length).padStart(2, '0')}`;
+  document.documentElement.style.setProperty('--route-accent', ROUTES[selected].accent);
   $('garage-visual-route').textContent = `${ROUTES[selected].district} · QATAR`;
   renderRouteChoices(); renderGarage();
   if (state === 'menu') resetMenuCamera();
   if (state === 'garage') garagePose(true);
 }
 function resetMenuCamera() {
-  const y = selected === 2 ? 108 : selected === 1 ? 90 : 91;
-  camera.position.set(47, y, 230);
-  camera.lookAt(0, selected === 2 ? 29 : selected === 0 ? 21 : 6, 0);
+  const route = ROUTES[selected];
+  const radius = route.large ? 182 : 235;
+  camera.position.set(menuTarget.x + radius * .23, route.large ? 68 : route.id === 'westbay' ? 108 : 91, menuTarget.z + radius);
+  camera.lookAt(menuTarget.x, route.large ? 14 : route.id === 'westbay' ? 29 : 14, menuTarget.z);
 }
 function buildCar() {
   scene.remove(car);
@@ -234,21 +249,31 @@ function setTime(key) {
   if (state === 'menu') renderRouteChoices();
 }
 function renderRouteChoices() {
-  $('menu-route-options').innerHTML = ROUTES.map((r, i) => `
-    <button class="route-option ${i === selected ? 'selected' : ''}" data-action="select-route" data-index="${i}" aria-pressed="${i === selected}">
-      <span class="route-index">${r.number}</span><span class="route-main"><strong>${r.district}</strong><small>${r.tagline}</small></span><span class="route-select-arrow">${i === selected ? '✳' : '↗'}</span>
+  const r = ROUTES[selected];
+  $('route-feature').style.setProperty('--card-accent', r.accent);
+  $('route-feature').innerHTML = `<div class="feature-kicker"><span>${r.large ? '✳ &nbsp; LONG CITY DRIVE' : '↗ &nbsp; ICONIC DISTRICT SPRINT'}</span><span>${r.number} / ${String(ROUTES.length).padStart(2, '0')}</span></div>
+    <strong>${r.name}</strong><p>${r.description}</p><div class="feature-meta"><span>↗ ${Math.round(world.length / 100) / 10} KM</span><span>◉ ${r.laps} ${r.laps === 1 ? 'LAP' : 'LAPS'}</span><span>✧ 8 GATES</span></div>`;
+  $('menu-route-options').innerHTML = ROUTES.map((route, i) => `
+    <button class="route-option ${i === selected ? 'selected' : ''}" data-action="select-route" data-index="${i}" aria-pressed="${i === selected}" style="--option-accent:${route.accent}">
+      <span class="route-index">${route.number}</span><span class="route-main"><strong>${route.short}</strong><small>${route.tagline}</small></span><span class="route-select-arrow">${route.large ? '✳' : '↗'}</span>
     </button>`).join('');
+  const list = $('menu-route-options'), current = list.querySelector('.selected');
+  requestAnimationFrame(() => {
+    if (state !== 'menu' || !current?.isConnected) return;
+    if (innerWidth <= 700) list.scrollTo({ left: current.offsetLeft - list.offsetLeft - list.clientWidth / 2 + current.clientWidth / 2, behavior: 'smooth' });
+    else list.scrollTo({ top: current.offsetTop - list.offsetTop - list.clientHeight / 2 + current.clientHeight / 2, behavior: 'smooth' });
+  });
 }
 function renderGarage() {
   const c = CARS[carIndex];
   $('garage-car').innerHTML = `
     <div class="selected-car"><div class="car-topline"><span class="car-type">${c.type}</span><span class="car-number">NO. ${c.number}</span></div>
     <div class="car-selector"><button data-action="prev-car" aria-label="Previous car">←</button><div><strong>${c.name}</strong><span>${c.description}</span></div><button data-action="next-car" aria-label="Next car">→</button></div>
-    <div class="car-color-line"><span style="background:${c.color}"></span><small>0${carIndex + 1} OF 03 MACHINES</small></div>
+    <div class="car-color-line"><span style="background:${c.color}"></span><small>0${carIndex + 1} OF 0${CARS.length} MACHINES</small></div>
     <div class="car-stats">${['TOP SPEED', 'ACCELERATION', 'HANDLING', 'BRAKING'].map((name, i) => `<div class="stat"><small>${name}</small><div class="stat-track"><i style="width:${c.stats[i]}%"></i></div><b>${c.stats[i]}</b></div>`).join('')}</div></div>`;
   $('garage-routes').innerHTML = ROUTES.map((r, i) => `
     <button class="garage-route ${selected === i ? 'selected' : ''}" data-action="select-route" data-index="${i}" aria-pressed="${selected === i}">
-      <span class="garage-route-num">${r.number}</span><span><strong>${r.name}</strong><small>${r.highlights.slice(0, 3).join(' · ')}</small></span><span class="route-laps">${r.laps} LAPS</span>
+      <span class="garage-route-num">${r.number}</span><span><strong>${r.name}</strong><small>${r.highlights.slice(0, 3).join(' · ')}</small></span><span class="route-laps">${r.large ? 'LONG · ' : ''}${r.laps} ${r.laps === 1 ? 'LAP' : 'LAPS'}</span>
     </button>`).join('');
   $('garage-drivers').innerHTML = DRIVERS.map((d, i) => `<button class="driver-chip ${i === driverIndex ? 'selected' : ''}" data-action="driver" data-index="${i}">${i === 0 ? '◉ ' : ''}${d}</button>`).join('');
   $('garage-visual-car').textContent = c.name;
@@ -301,12 +326,13 @@ function startGame(type = 'race') {
   orbit.enabled = false;
   gameMode = type;
   cameraIndex = 0;
-  raceTime = 0; lapTime = 0; cpTotal = 0; progress = 0; record = false;
+  raceTime = 0; lapTime = 0; trafficClock = 0; cpTotal = 0; progress = 0; record = false;
   refreshRecords();
   placeCar(type === 'race' ? -.028 : .016);
   if (type === 'race') progress = -.028;
   snapChase();
   $('hud-stage').textContent = ROUTES[selected].name;
+  $('location-chip').classList.add('hidden');
   $('mode-tag').textContent = type === 'race' ? 'RALLY' : 'FREE DRIVE';
   $('race-time').textContent = type === 'race' ? '00:00.00' : '--:--.--';
   $('best-time').textContent = best ? fmt(best) : '--:--.--';
@@ -333,8 +359,8 @@ function showPhoto() {
   $('hud').classList.add('hidden'); $('site-footer').classList.add('hidden');
   $('photo-toolbar').classList.remove('hidden');
   document.body.classList.remove('playing'); document.body.classList.add('photo-active');
-  camera.position.set(119, 80, 152); camera.fov = 58; camera.updateProjectionMatrix();
-  orbit.target.set(0, selected === 2 ? 32 : selected === 0 ? 21 : 6, 0);
+  camera.position.set(menuTarget.x + (ROUTES[selected].large ? 155 : 119), ROUTES[selected].large ? 85 : 80, menuTarget.z + (ROUTES[selected].large ? 188 : 152)); camera.fov = 58; camera.updateProjectionMatrix();
+  orbit.target.set(menuTarget.x, ROUTES[selected].large ? 14 : selected === 3 ? 32 : selected === 1 ? 21 : 6, menuTarget.z);
   orbit.update();
   toast('DRAG TO ORBIT  ·  SCROLL TO ZOOM');
 }
@@ -370,7 +396,7 @@ function showHow() {
     ['P / ESC', 'PAUSE GAME'], ['M / H', 'MUTE / HIDE HUD'], ['1 — 4', 'DAY / GOLDEN / DUSK / NIGHT'],
   ];
   modal(`<div class="modal-top"><span class="section-kicker">THE ROAD IS YOURS</span><button class="round-close" data-action="close-modal" aria-label="Close">×</button></div>
-    <h2 class="section-title">HOW TO <em>PLAY.</em></h2><p class="modal-lead">Pass all eight checkpoints in order each lap. Follow the highlighted gate, stay on the asphalt, and beat your best time.</p>
+    <h2 class="section-title">HOW TO <em>PLAY.</em></h2><p class="modal-lead">Pass eight glowing checkpoints in order each lap. Watch the working traffic signals: crossing on red adds two seconds to your race time. Side streets are open for exploring in Free Drive.</p>
     <div class="help-grid">${rows.map(([k, v]) => `<div><kbd>${k}</kbd><span>${v}</span></div>`).join('')}</div>
     <div class="modal-note"><b>ON A PHONE?</b> Use the on-screen steering and pedals. No keyboard required.</div>
     <button class="modal-cta" data-action="close-modal">GOT IT <span>↗</span></button>`, 'how');
@@ -390,7 +416,7 @@ function showCredits() {
   modal(`<div class="modal-top"><span class="section-kicker">BUILT FOR THE OPEN ROAD</span><button class="round-close" data-action="close-modal" aria-label="Close">×</button></div>
     <h2 class="section-title">ABOUT <em>DOHA RUSH.</em></h2>
     <p class="modal-lead">A playable, original 3D racing demo inspired by a love of Qatar and the spirit of the reference game. No account, ads or external game assets.</p>
-    <div class="about-districts"><div><b>01</b><span>LUSAIL</span><small>Stadium · Katara Towers · Place Vendôme</small></div><div><b>02</b><span>THE PEARL</span><small>Porto Arabia · Qanat Quartier · Medina Centrale</small></div><div><b>03</b><span>WEST BAY</span><small>Doha Tower · Tornado Tower · Corniche</small></div></div>
+    <div class="about-districts"><div><b>01</b><span>THE DOHA GRAND TOUR</span><small>Eight checkpoints across the city</small></div><div><b>02</b><span>THE THREE SPRINTS</span><small>Lusail · The Pearl · West Bay</small></div><div><b>05</b><span>BEYOND THE SKYLINE</span><small>Corniche · Old Doha · Katara · Aspire &amp; Education City</small></div></div>
     <p class="disclaimer">Real location and street names appear as inspiration; routes, buildings, road connections and proportions are stylised and should never be used for navigation. Independent fan project, not affiliated with any venue or public authority.</p>
     <button class="modal-cta" data-action="close-modal">BACK TO THE CITY <span>↗</span></button>`, 'credits');
 }
@@ -457,7 +483,9 @@ app.addEventListener('click', (event) => {
   const action = button.dataset.action;
   if (action !== 'select-route') audio.start();
   audio.beep(650, .048, 'sine', .09);
-  if (action === 'select-route') {
+  if (action === 'prev-route') selectRoute(selected - 1);
+  else if (action === 'next-route') selectRoute(selected + 1);
+  else if (action === 'select-route') {
     if (['menu', 'garage'].includes(state)) selectRoute(button.dataset.index);
   } else if (action === 'start') startGame('race');
   else if (action === 'free') startGame('free');
@@ -551,7 +579,7 @@ function physics(dt) {
   const cfg = CARS[carIndex];
   const throttle = !!(keys.KeyW || keys.ArrowUp || touch.throttle);
   const brake = !!(keys.KeyS || keys.ArrowDown || touch.brake);
-  const steer = (keys.KeyD || keys.ArrowRight || touch.right ? 1 : 0) - (keys.KeyA || keys.ArrowLeft || touch.left ? 1 : 0);
+  const steer = steeringInput(keys, touch);
   const handbrake = !!(keys.Space || touch.handbrake);
   player.steer += (steer - player.steer) * Math.min(1, dt * 9);
   player.prevSpeed = player.speed;
@@ -566,7 +594,7 @@ function physics(dt) {
     (1 + Math.abs(player.speed) * .034) * (handbrake ? 1.45 : 1);
   player.yaw += yawRate * dt;
   // Gentle lateral dynamics for controllable, visible powerslides.
-  player.drift += player.steer * Math.abs(player.speed) * (handbrake ? .48 : .055) * dt;
+  player.drift -= player.steer * Math.abs(player.speed) * (handbrake ? .48 : .055) * dt;
   player.drift *= Math.exp(-cfg.grip * (handbrake ? .28 : 1) * dt);
   const fx = Math.sin(player.yaw), fz = Math.cos(player.yaw);
   const rx = Math.cos(player.yaw), rz = -Math.sin(player.yaw);
@@ -574,9 +602,10 @@ function physics(dt) {
   player.z += (fz * player.speed + rz * player.drift) * dt;
 
   // Characteristic buildings remain solid even in free drive.
-  const colliders = selected === 0 ? [[-22, -18, 52], [73, 35, 23], [-87, 38, 31]]
-    : selected === 1 ? [[0, 0, 51], [96, 32, 14]]
-      : [[42, 27, 14], [-33, 7, 14], [68, -65, 24], [-70, -67, 27]];
+  const colliders = ROUTES[selected].id === 'grand' ? [[42, 27, 14], [-33, 7, 14], [68, -65, 24], [-70, -67, 27]]
+    : ROUTES[selected].id === 'lusail' ? [[-22, -18, 52], [73, 35, 23], [-87, 38, 31]]
+    : ROUTES[selected].id === 'pearl' ? [[0, 0, 51], [96, 32, 14]]
+      : ROUTES[selected].id === 'westbay' ? [[42, 27, 14], [-33, 7, 14], [68, -65, 24], [-70, -67, 27]] : [];
   for (const [cx, cz, radius] of colliders) {
     const dx = player.x - cx, dz = player.z - cz;
     const distance = Math.hypot(dx, dz);
@@ -589,25 +618,36 @@ function physics(dt) {
   }
   const near = world.nearest(player.x, player.z);
   const absSide = Math.abs(near.lateral);
+  const paved = world.nearestPaved(player.x, player.z);
   player.lateral = near.lateral;
-  player.offroad = absSide > 9;
-  if (gameMode === 'race' && absSide > 16.8) {
+  player.offroad = paved.distance > (paved.branch ? 8.3 : 9);
+  if (gameMode === 'race' && absSide > 16.8 && !(paved.branch && paved.distance < 9)) {
     const s = Math.sign(near.lateral);
     player.x -= near.sample.rx * s * (absSide - 16.8);
     player.z -= near.sample.rz * s * (absSide - 16.8);
     player.speed *= .72; player.drift *= -.2;
   }
   // No driving a fictional car into the Gulf.
-  const inSea = selected === 1 ? (Math.hypot(player.x, player.z) > 192 || Math.hypot(player.x, player.z) < 48)
-    : player.x > 206;
-  if (inSea) resetCar();
+  const inSea = ROUTES[selected].id === 'pearl' ? (Math.hypot(player.x, player.z) > 192 || Math.hypot(player.x, player.z) < 48)
+    : ROUTES[selected].coastline === null ? false : player.x > (ROUTES[selected].coastline || 205) + 1;
+  if (inSea) { resetCar(); return; }
 
   if (state === 'race') {
     let delta = near.i - prevTrackIdx;
     if (delta > world.N / 2) delta -= world.N;
     if (delta < -world.N / 2) delta += world.N;
     // A very large jump usually means a reset, not a legitimately completed section.
-    if (Math.abs(delta) < world.N * .075) progress += delta / world.N;
+    if (Math.abs(delta) < world.N * .075) {
+      progress += delta / world.N;
+      if (delta > 0 && absSide < 10 && player.speed > 2) for (const signal of world.traffic) {
+        const ahead = (Math.round(signal.t * world.N) - prevTrackIdx + world.N) % world.N;
+        if (ahead > 0 && ahead <= delta && world.signalPhase(trafficClock, signal.index).name === 'RED') {
+          raceTime += 2;
+          toast('RED LIGHT · +2 SECOND PENALTY', 2200);
+          audio.beep(260, .18, 'sawtooth', .1);
+        }
+      }
+    }
     prevTrackIdx = near.i;
     while (progress >= (cpTotal + 1) / 8 && absSide < 13 && player.speed > 1.5 && cpTotal < ROUTES[selected].laps * 8) {
       cpTotal++;
@@ -676,14 +716,14 @@ function updateTime(dt) {
   sun.color.copy(currentTime.sun); sun.intensity = currentTime.intensity;
   hemi.intensity = currentTime.ambient;
   scene.fog.color.copy(currentTime.fog);
-  scene.fog.density = .00155 + currentTime.night * .0006;
+  scene.fog.density = (ROUTES[selected].large ? .00096 : .00155) + currentTime.night * .0006;
   renderer.toneMappingExposure = currentTime.exposure;
   const targetX = ['race', 'free', 'countdown', 'paused', 'results'].includes(state) ? player.x : 0;
   const targetZ = ['race', 'free', 'countdown', 'paused', 'results'].includes(state) ? player.z : 0;
   sun.target.position.set(targetX, 0, targetZ);
   sun.position.copy(currentTime.light).add(sun.target.position);
   sun.target.updateMatrixWorld();
-  world.updateLights(currentTime.night, elapsed, cpTotal % 8);
+  world.updateLights(currentTime.night, ['menu', 'garage', 'loading', 'photo'].includes(state) ? elapsed : trafficClock, cpTotal % 8);
   skyClock += dt;
   if (skyClock > .11) {
     skyClock = 0;
@@ -694,33 +734,49 @@ function updateTime(dt) {
 function drawMap() {
   const canvas = $('minimap'); const g = canvas.getContext('2d');
   const w = canvas.width, h = canvas.height;
-  const px = x => w / 2 + x * .94;
-  const pz = z => h / 2 + z * .61;
+  const bounds = ROUTES[selected].large ? 595 : 203;
+  const scale = Math.min((w - 30) / (bounds * 2), (h - 34) / (ROUTES[selected].large ? 820 : 360));
+  const px = x => w / 2 + x * scale;
+  const pz = z => h / 2 + z * scale;
   g.clearRect(0, 0, w, h);
-  g.fillStyle = selected === 1 ? 'rgba(20,88,113,.18)' : 'rgba(35,79,105,.14)';
+  g.fillStyle = ROUTES[selected].id === 'pearl' ? 'rgba(20,88,113,.18)' : 'rgba(35,79,105,.14)';
   g.fillRect(0, 0, w, h);
   g.strokeStyle = 'rgba(205,225,221,.08)'; g.lineWidth = 1;
   for (let i = 0; i < w; i += 35) { g.beginPath(); g.moveTo(i, 0); g.lineTo(i, h); g.stroke(); }
   for (let j = 0; j < h; j += 34) { g.beginPath(); g.moveTo(0, j); g.lineTo(w, j); g.stroke(); }
-  if (selected === 1) {
-    g.fillStyle = 'rgba(73,173,187,.25)'; g.beginPath(); g.arc(px(0), pz(0), 31, 0, PI2); g.fill();
-  } else {
-    g.fillStyle = 'rgba(50,170,192,.18)'; g.fillRect(px(208), 0, w - px(208), h);
+  if (ROUTES[selected].id === 'pearl') {
+    g.fillStyle = 'rgba(73,173,187,.25)'; g.beginPath(); g.arc(px(0), pz(0), 192 * scale, 0, PI2); g.fill();
+  } else if (ROUTES[selected].coastline !== null) {
+    g.fillStyle = 'rgba(50,170,192,.18)'; g.fillRect(px(ROUTES[selected].coastline || 208), 0, w, h);
+  }
+  if (world.sideRoad) {
+    g.beginPath(); world.sideRoad.ring.forEach((p, i) => i ? g.lineTo(px(p.x), pz(p.z)) : g.moveTo(px(p.x), pz(p.z)));
+    g.closePath(); g.strokeStyle = 'rgba(102,211,206,.36)'; g.lineWidth = 3; g.stroke();
+    world.sideRoad.junctions.forEach(t => {
+      const a = world.at(t, -51), b = world.at(t);
+      g.beginPath(); g.moveTo(px(a.x), pz(a.z)); g.lineTo(px(b.x), pz(b.z)); g.stroke();
+    });
   }
   const route = world.samples;
   g.beginPath(); route.forEach((p, i) => i ? g.lineTo(px(p.x), pz(p.z)) : g.moveTo(px(p.x), pz(p.z))); g.closePath();
   g.strokeStyle = 'rgba(218,245,236,.16)'; g.lineWidth = 22; g.lineJoin = 'round'; g.stroke();
   g.strokeStyle = '#d6e5df'; g.lineWidth = 8; g.shadowColor = 'rgba(84,202,211,.4)'; g.shadowBlur = 14; g.stroke(); g.shadowBlur = 0;
   for (let i = 0; i < 8; i++) {
-    const p = world.at((i + 1) / 8);
+    const p = world.at(world.gateTs[i]);
     g.beginPath(); g.arc(px(p.x), pz(p.z), i === cpTotal % 8 ? 8 : 4, 0, PI2);
     g.fillStyle = i === cpTotal % 8 && gameMode === 'race' ? '#ffd398' : 'rgba(255,255,255,.52)';
     g.fill();
   }
+  for (const signal of world.traffic) {
+    const p = world.at(signal.t);
+    g.fillStyle = { GREEN: '#68e6b4', AMBER: '#ffd079', RED: '#ff667f' }[world.signalPhase(trafficClock, signal.index).name];
+    g.beginPath(); g.arc(px(p.x), pz(p.z), 2.7, 0, PI2); g.fill();
+  }
   const start = world.samples[0];
   g.fillStyle = '#f8e7c4'; g.fillRect(px(start.x) - 4, pz(start.z) - 4, 8, 8);
   // Player triangle, rotated to match the car's world heading.
-  g.save(); g.translate(px(player.x), pz(player.z)); g.rotate(-player.yaw);
+  // Map Y increases with world Z; point the triangle along the actual car nose (+Z).
+  g.save(); g.translate(px(player.x), pz(player.z)); g.rotate(Math.PI - player.yaw);
   g.shadowColor = '#69e5e7'; g.shadowBlur = 13;
   g.beginPath(); g.moveTo(0, -10); g.lineTo(-7, 8); g.lineTo(0, 5); g.lineTo(7, 8); g.closePath();
   g.fillStyle = '#52dbde'; g.fill(); g.restore();
@@ -740,7 +796,7 @@ function updateHUD() {
   $('rpm-fill').style.width = `${Math.min(100, (rpm - 2000) / 17)}%`;
   $('throttle-fill').style.width = keys.KeyW || keys.ArrowUp || touch.throttle ? '100%' : '0%';
   $('brake-fill').style.width = keys.KeyS || keys.ArrowDown || touch.brake ? '100%' : '0%';
-  $('gforce-dot').style.transform = `translate(${clamp(player.steer * speed / 150, -.75, .75) * 17}px, ${clamp((player.speed - player.prevSpeed) * 9, -14, 14)}px)`;
+  $('gforce-dot').style.transform = `translate(${clamp(-player.steer * speed / 150, -.75, .75) * 17}px, ${clamp((player.speed - player.prevSpeed) * 9, -14, 14)}px)`;
   $('camera-name').textContent = `${CAMERA_NAMES[cameraIndex]} CAM`;
   if (gameMode === 'race') {
     $('race-time').textContent = fmt(raceTime);
@@ -754,6 +810,17 @@ function updateHUD() {
   if (ix < 0) ix = 0;
   $('street-name').textContent = player.offroad ? 'OFF ROAD · FIND THE CIRCUIT' : route.streets[ix].toUpperCase();
   $('street-name').classList.toggle('offroad', player.offroad);
+  const here = world.nearest(player.x, player.z).i / world.N;
+  let next = world.traffic[0], ahead = 1;
+  world.traffic.forEach(s => { const d = (s.t - here + 1) % 1; if (d < ahead) { ahead = d; next = s; } });
+  const phase = world.signalPhase(trafficClock, next.index);
+  const indicator = $('traffic-hud'); indicator.dataset.signal = phase.name.toLowerCase();
+  indicator.querySelectorAll('.signal-dots i').forEach((dot, i) => dot.classList.toggle('lit', i === phase.index));
+  $('signal-label').textContent = `${phase.name} · ${String(phase.seconds).padStart(2, '0')}S`;
+  $('signal-distance').textContent = `${Math.round(ahead * world.length)} M AHEAD`;
+  const site = (route.landmarks || []).find(l => Math.abs(((l.t - here + 1.5) % 1) - .5) < .023);
+  $('location-chip').classList.toggle('hidden', !site || player.offroad);
+  if (site) $('location-name').textContent = site.name;
   drawMap();
 }
 
@@ -765,6 +832,7 @@ function frame(now) {
   // Honour wall-clock time even on software-rendered browsers. Physics subdivides long frames.
   const dt = Math.min(.32, rawDt);
   lastFrame = now; elapsed += dt;
+  if (['race', 'free', 'countdown'].includes(state)) trafficClock += dt;
   if (!qualityAdjusted && state !== 'loading') {
     qualityFrames++; qualitySum += rawDt;
     if (qualityFrames >= 16) {
@@ -779,9 +847,12 @@ function frame(now) {
   updateTime(dt);
   if (state === 'menu' || state === 'loading') {
     const orbitAngle = 1.34 + elapsed * .026;
-    camDesired.set(Math.cos(orbitAngle) * 235, selected === 2 ? 105 : selected === 1 ? 89 : 92, Math.sin(orbitAngle) * 235);
+    const large = ROUTES[selected].large;
+    const orbitRadius = large ? 177 : 235;
+    camDesired.set(menuTarget.x + Math.cos(orbitAngle) * orbitRadius, large ? 68 : selected === 3 ? 105 : 92,
+      menuTarget.z + Math.sin(orbitAngle) * orbitRadius);
     camera.position.lerp(camDesired, 1 - Math.exp(-dt * .35));
-    camera.lookAt(0, selected === 2 ? 31 : selected === 0 ? 19 : 7, 0);
+    camera.lookAt(menuTarget.x, large ? 14 : selected === 3 ? 31 : selected === 1 ? 19 : 7, menuTarget.z);
     camera.fov += (55 - camera.fov) * .06; camera.updateProjectionMatrix();
     car.visible = true;
   } else if (state === 'garage') {
